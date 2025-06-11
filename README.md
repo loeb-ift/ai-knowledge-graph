@@ -43,6 +43,23 @@ pip install --upgrade -e .
 generate-graph --input your_text_file.txt --output knowledge_graph.html
 ```
 
+啟動api服務，執行main.py 知識圖譜生成API
+
+安裝依賴：
+    pip install fastapi uvicorn python-multipart
+
+啟動服務：
+    uvicorn main:app --reload
+
+測試API：
+    curl -X POST "http://localhost:8000/generate-graph" \
+         -H "Content-Type: application/json" \
+         -d '{"input_file":"your_text_file.txt"}'
+```bash
+pip install fastapi uvicorn python-multip
+uvicorn main:app --reload
+```
+
 ## Configuration
 
 The system can be configured using the `config.toml` file:
