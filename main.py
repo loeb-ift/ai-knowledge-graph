@@ -14,11 +14,30 @@
 """
 
 from fastapi import FastAPI, HTTPException
-import subprocess
 from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import datetime
+import subprocess
 
-# 初始化FastAPI應用
-app = FastAPI(title="Knowledge Graph Generator")
+# 更新為PostgreSQL配置
+SQLALCHEMY_DATABASE_URL = "postgresql+psycopg2://user:password@localhost/knowledge_graph"
+engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_size=10, max_overflow=20)
+
+# 新增PostgreSQL專用類型(可選)
+from sqlalchemy.dialects.postgresql import JSONB
+
+class HTMLContent(Base):
+    __tablename__ = "html_contents"
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(Text)
+    metadata = Column(JSONB)  # 新增JSONB類型欄位
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
 
 class GraphRequest(BaseModel):
     """請求數據模型
@@ -28,6 +47,47 @@ class GraphRequest(BaseModel):
     """
     input_file: str
     output_file: str = "knowledge_graph.html"
+
+# 新增請求模型
+class HTMLRequest(BaseModel):
+    html_content: str
+
+# 新增API端點
+@app.post("/store-html",
+    responses={
+        200: {"description": "HTML儲存成功", "content": {"application/json": {"example": {"id": 1, "created_at": "2024-03-01T12:00:00"}}}},
+        500: {"description": "伺服器內部錯誤", "content": {"application/json": {"example": {"detail": "錯誤訊息..."}}}}
+    },
+    summary="儲存HTML內容到資料庫",
+    description="""
+    ### 測試方法
+    ```bash
+    curl -X POST "http://localhost:8000/store-html" \
+         -H "Content-Type: application/json" \
+         -d '{"html_content": "<html>...</html>"}'
+    ```
+    
+    ### 請求參數
+    ```json
+    {
+      "html_content": "<html>...</html>"
+    }
+    ```
+    """
+)
+async def store_html(request: HTMLRequest):
+    db = SessionLocal()
+    try:
+        html_record = HTMLContent(content=request.html_content)
+        db.add(html_record)
+        db.commit()
+        db.refresh(html_record)
+        return {"id": html_record.id, "created_at": html_record.created_at}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
 @app.post(
     "/generate-graph",
