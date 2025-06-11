@@ -8,10 +8,33 @@
     uvicorn main:app --reload
 
 測試API：
+1. 生成圖譜並寫入文件系統：
     curl -X POST "http://localhost:8000/generate-graph" \
          -H "Content-Type: application/json" \
          -d '{"input_file":"your_text_file.txt"}'
+
+2. 儲存HTML到資料庫：
+    curl -X POST "http://localhost:8000/store-html" \
+         -H "Content-Type: application/json" \
+         -d '{"html_content": "<html>...</html>", "filename": "graph_123.html"}'
+
+3. 查詢已儲存記錄(新增GET API)：
+    curl "http://localhost:8000/html-contents/1"
 """
+
+# 新增查詢端點
+@app.get("/html-contents/{content_id}",
+         response_model=HTMLContent,
+         summary="取得儲存的HTML內容",
+         responses={
+             404: {"description": "找不到指定內容"}
+         })
+async def get_html_content(content_id: int):
+    db = SessionLocal()
+    content = db.query(HTMLContent).filter(HTMLContent.id == content_id).first()
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+    return content
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -20,6 +43,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import datetime
 import subprocess
+from pydantic_settings import BaseSettings
 
 # 更新為PostgreSQL配置
 SQLALCHEMY_DATABASE_URL = "postgresql+psycopg2://user:password@localhost/knowledge_graph"
@@ -30,55 +54,47 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 class HTMLContent(Base):
     __tablename__ = "html_contents"
+    
     id = Column(Integer, primary_key=True, index=True)
-    content = Column(Text)
-    metadata = Column(JSONB)  # 新增JSONB類型欄位
-    created_at = Column(DateTime(timezone=True), default=func.now())
+    filename = Column(String(255), nullable=False, unique=True, comment='儲存的HTML檔案名稱，包含副檔名')
+    content = Column(Text, nullable=False)
+    metadata = Column(JSONB)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI()
-
-class GraphRequest(BaseModel):
-    """請求數據模型
-    Attributes:
-        input_file: 輸入文本文件路徑 (必填)
-        output_file: 輸出HTML文件路徑 (可選，預設為knowledge_graph.html)
-    """
-    input_file: str
-    output_file: str = "knowledge_graph.html"
-
-# 新增請求模型
+# 更新請求模型
 class HTMLRequest(BaseModel):
     html_content: str
+    filename: str = Field(..., min_length=3, example="report_2023.html")
 
-# 新增API端點
-@app.post("/store-html",
-    responses={
-        200: {"description": "HTML儲存成功", "content": {"application/json": {"example": {"id": 1, "created_at": "2024-03-01T12:00:00"}}}},
-        500: {"description": "伺服器內部錯誤", "content": {"application/json": {"example": {"detail": "錯誤訊息..."}}}}
-    },
-    summary="儲存HTML內容到資料庫",
+# 更新API端點
+app = FastAPI(
+    title="知識圖譜生成API",
     description="""
-    ### 測試方法
-    ```bash
-    curl -X POST "http://localhost:8000/store-html" \
-         -H "Content-Type: application/json" \
-         -d '{"html_content": "<html>...</html>"}'
-    ```
-    
-    ### 請求參數
-    ```json
-    {
-      "html_content": "<html>...</html>"
+    ## Swagger UI訪問路徑
+    - 互動式文檔: http://localhost:8000/docs
+    - OpenAPI規格: http://localhost:8000/openapi.json
+    """,
+    version="1.1.0"
+)
+
+@app.post(
+    "/store-html",
+    tags=["Database API"],
+    responses={
+        200: {"description": "HTML儲存成功", "content": {"application/json": {"example": {"id": 1, "filename": "report.html"}}}},
+        500: {"description": "伺服器內部錯誤"}
+    },
+    openapi_extra={
+        "x-swagger-router-controller": "knowledge_graph"
     }
-    ```
-    """
 )
 async def store_html(request: HTMLRequest):
     db = SessionLocal()
     try:
-        html_record = HTMLContent(content=request.html_content)
+        html_record = HTMLContent(
+            content=request.html_content,
+            filename=request.filename
+        )
         db.add(html_record)
         db.commit()
         db.refresh(html_record)
@@ -94,7 +110,9 @@ async def store_html(request: HTMLRequest):
     summary="生成知識圖譜",
     description="執行generate-graph.py腳本並返回生成結果"
 )
+@app.post("/generate-graph")
 async def generate_graph(request: GraphRequest):
+    output_path = Path(config.HTML_OUTPUT_DIR) / f"graph_{uuid.uuid4()}.html"
     """
     主要處理函數：
     1. 接收並驗證請求參數
